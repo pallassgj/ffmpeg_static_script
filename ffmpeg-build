@@ -1,3 +1,224 @@
 #!/bin/bash
 
-#https://github.com/pallassgj/ffmpeg_static_script.git
+# https://github.com/pallassgj/ffmpeg_static_script.git
+
+VERSION=0.1
+CWD=$(pwd)
+PACKAGES="$CWD/packages"
+WORKSPACE="$CWD/workspace"
+CC=clang
+LDFLAGS="-L${WORKSPACE}/lib -lm" 
+CFLAGS="-I${WORKSPACE}/include"
+PKG_CONFIG_PATH="${WORKSPACE}/lib/pkgconfig"
+
+# 变量NUMJOBS自动检测环境, 提高处理效率
+if [[ -n $NUMJOBS ]]; then
+    MJOBS=$NUMJOBS
+elif [[ -f /proc/cpuinfo ]]; then
+    MJOBS=$(grep -c processor /proc/cpuinfo)
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+	MJOBS=$(sysctl -n machdep.cpu.thread_count)
+else
+    MJOBS=4
+fi
+
+# Mac下安装的的工具, 方便下载
+install_tool() {
+	if [ ! `which brew` ]; then
+		# 安装brew工具
+		echo 'homebrew not found. Trying to install...'
+		ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" \
+				|| exit 1
+		echo 'Homebrew updating...'
+		brew update
+	fi
+
+	if [ ! `which git` ]; then
+		# 安装git工具
+		echo 'git not found. Trying to install...'
+		brew install git
+	fi
+
+	if [ ! `which hg` ]; then
+		# 安装hg工具, 需要更新Python, 并以管理员方式运行
+		echo 'hg not found. Trying to install...'
+		brew install python
+		easy_install mercurial
+	fi
+
+	if [ ! `which svn` ]; then
+		# 安装svn工具
+		echo 'svn not found. Trying to install...'
+		brew install svn
+	fi
+
+	if [ ! `which wget` ]; then
+		# 安装wget工具
+		echo 'wget not found. Trying to install...'
+		brew install wget
+	fi
+}
+
+# 创建目录
+make_dir () {
+	if [ ! -d $1 ]; then
+		if ! mkdir $1; then			
+			printf "\n Failed to create dir: " "$1";
+			exit 1
+		fi
+	fi	
+}
+
+# 删除目录
+remove_dir () {
+	if [ -d $1 ]; then
+		rm -r "$1"
+	fi	
+}
+
+# git方式将代码迁移下来
+update_to_desired_branch_or_revision() {
+	local to_dir="$1"
+	local desired_branch="$2"
+	if [ -n "$desired_branch" ]; then
+		pushd $to_dir
+		cd $to_dir
+		echo "git checkout $desired_branch"
+		git checkout "$desired_branch"
+		git merge "$desired_branch" # depending on which type it is :)
+		popd # in case it's a cd to ., don't want to cd to .. here...
+	fi
+	echo "now in"
+	echo `pwd`
+}
+
+do_git_checkout() {
+	local repo_url="$1"
+	local to_dir=$PACKAGES/"$2"
+	local desired_branch="$3"
+	if [ ! -d $to_dir ]; then
+		echo "Downloading (via git clone) $to_dir"
+		# prevent partial checkouts by renaming it only after success
+		git clone $repo_url $to_dir || exit 1
+		echo "done downloading $to_dir"
+		update_to_desired_branch_or_revision $to_dir $desired_branch
+		echo $to_dir
+		echo $desired_branch
+	else
+		pushd $to_dir
+		cd $to_dir
+		echo "Updating to latest $to_dir version..."
+		old_git_version=`git rev-parse HEAD`
+		#git pull
+		update_to_desired_branch_or_revision "." $desired_branch
+		new_git_version=`git rev-parse HEAD`
+		if [[ "$old_git_version" != "$new_git_version" ]]; then
+			echo "got upstream changes, forcing re-configure."
+			rm already*
+		fi 
+		popd
+	fi
+}
+
+# hg方式将代码迁移下来
+hg_update_to_desired_branch_or_revision() {
+	local to_dir="$1"
+	local desired_branch="$2"
+	if [ -n "$desired_branch" ]; then
+		pushd $to_dir
+		cd $to_dir
+		echo "hg checkout $desired_branch"
+		hg checkout "$desired_branch"
+		hg merge "$desired_branch" # depending on which type it is :)
+		popd # in case it's a cd to ., don't want to cd to .. here...
+	fi
+	echo "now in"
+	echo `pwd`
+}
+
+do_hg_checkout() {
+	local repo_url="$1"
+	local to_dir=$PACKAGES/"$2"
+	local desired_branch="$3"
+	if [ ! -d $to_dir ]; then
+		echo "Downloading (via hg clone) $to_dir"
+		# prevent partial checkouts by renaming it only after success
+		hg clone $repo_url $to_dir || exit 1
+		echo "done downloading $to_dir"
+		hg_update_to_desired_branch_or_revision $to_dir $desired_branch
+	else
+		pushd $to_dir
+		cd $to_dir
+		echo "Updating to latest $to_dir version..."
+		old_hg_version=`hg parent | grep "changeset:" | awk -F [" ":]+ '{print $3}'`
+		#hg pull
+		hg_update_to_desired_branch_or_revision "." $desired_branch
+		new_hg_version=`hg parent | grep "changeset:" | awk -F [" ":]+ '{print $3}'`
+		if [[ "$old_hg_version" != "$new_hg_version" ]]; then
+			echo "got upstream changes, forcing re-configure."
+			rm already*
+		fi 
+		popd
+	fi
+}
+
+# svn方式迁出代码
+do_svn_checkout() {
+	repo_url="$1"
+	to_dir=$PACKAGES/"$2"
+	if [ ! -d $to_dir ]; then
+		echo "svn checking out to $to_dir"
+		svn checkout $repo_url $to_dir || exit 1
+	else
+		pushd $to_dir
+		cd $to_dir
+		echo "not svn Updating $to_dir since usually svn repo's aren't frequently updated..."
+		# svn up
+		popd
+	fi
+}
+
+# 下载解包文件
+download_and_unpack_file() {
+	url="$1"
+	output_name=$(basename $url)
+	output_dir=$PACKAGES/"$2"
+	if [ ! -f "$output_dir/unpacked.successfully" ]; then
+		wget "$url" -O "$output_name" || exit 1
+		tar -xf "$output_name" || unzip $output_name || exit 1
+		touch "$output_dir/unpacked.successfully"
+		rm "$output_name"
+	fi
+}
+
+download () {
+	if [ ! -f "$PACKAGES/$2" ]; then
+		
+		echo "zheng'zai $1"
+		curl -L --silent -o "$PACKAGES/$2" "$1"
+		
+		EXITCODE=$?
+		if [ $EXITCODE -ne 0 ]; then
+			echo ""
+			echo "Failed to download $1. Exitcode $EXITCODE. Retrying in 10 seconds";
+			sleep 10
+			curl -L --silent -o "$PACKAGES/$2" "$1"
+		fi
+		
+		EXITCODE=$?
+		if [ $EXITCODE -ne 0 ]; then
+			echo ""
+			echo "Failed to download $1. Exitcode $EXITCODE";
+			exit 1
+		fi
+		
+		echo "... Done"
+		
+		if ! tar -xvf "$PACKAGES/$2" -C "$PACKAGES" 2>/dev/null >/dev/null; then
+			echo "Failed to extract $2";
+			exit 1
+		fi
+		
+	fi
+}
+
