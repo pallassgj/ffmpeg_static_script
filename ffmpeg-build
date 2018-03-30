@@ -6,6 +6,7 @@ VERSION=0.1
 CWD=$(pwd)
 PACKAGES="$CWD/packages"
 WORKSPACE="$CWD/workspace"
+SOURCE="$CWD/source"
 CC=clang
 LDFLAGS="-L${WORKSPACE}/lib -lm" 
 CFLAGS="-I${WORKSPACE}/include"
@@ -46,6 +47,12 @@ install_tool() {
 		easy_install mercurial
 	fi
 
+	if [ ! `which g++`]; then
+		# 安装g++
+		echo 'g++ not found. Trying to install...'
+		brew install g++
+	fi
+
 	if [ ! `which svn` ]; then
 		# 安装svn工具
 		echo 'svn not found. Trying to install...'
@@ -57,6 +64,15 @@ install_tool() {
 		echo 'wget not found. Trying to install...'
 		brew install wget
 	fi
+}
+
+# 检查命令是否存在
+command_exists() {
+    if ! [[ -x $(command -v "$1") ]]; then
+        return 1
+    fi
+
+    return 0
 }
 
 # 创建目录
@@ -194,7 +210,7 @@ download_and_unpack_file() {
 download () {
 	if [ ! -f "$PACKAGES/$2" ]; then
 		
-		echo "zheng'zai $1"
+		echo "Downloading $1"
 		curl -L --silent -o "$PACKAGES/$2" "$1"
 		
 		EXITCODE=$?
@@ -222,3 +238,418 @@ download () {
 	fi
 }
 
+copy () {
+	if [ ! -f "$PACKAGES/$1" ]; then
+		
+		echo "Copying $1"
+		cp -r "$SOURCE/$1" "$PACKAGES/$1"
+
+		EXITCODE=$?
+		if [ $EXITCODE -ne 0 ]; then
+			echo "Failed to copy $1. Exitcode $EXITCODE";
+			exit 1
+		fi
+
+		echo "... Done"
+
+		if ! tar -xvf "$PACKAGES/$1" -C "$PACKAGES" 2>/dev/null >/dev/null; then
+			echo "Failed to extract $1";
+			exit 1
+		fi
+
+	fi
+}
+
+build () {
+	echo "building $1"
+	echo "======================="
+	
+	if [ -f "$PACKAGES/$1.done" ]; then
+		echo "$1 already built. Remove $PACKAGES/$1.done lockfile to rebuild it."
+		return 1
+	fi
+	
+	return 0
+}
+
+execute () {
+	echo "$ $*"
+	
+	if [[ ! $VERBOSE == "yes" ]]; then
+		OUTPUT="$($@ 2>&1)"
+	else
+		$@
+	fi
+	
+	if [ $? -ne 0 ]; then
+        echo "$OUTPUT"
+        echo ""
+        echo "Failed to Execute $*" >&2
+        exit 1
+    fi
+}
+
+build_done () {
+	touch "$PACKAGES/$1.done"
+}
+
+echo "ffmpeg_static_script v$VERSION"
+echo "========================="
+
+case "$1" in
+"--clean")
+	remove_dir $PACKAGES
+	remove_dir $WORKSPACE
+	echo "Cleanup done."
+	echo ""
+	exit 0
+    ;;
+"--build")
+
+    ;;
+*)
+    echo "Usage: $0"
+    echo "   --build: start building process"
+    echo "   --clean: remove all working dirs"
+    echo "   --help: show this help"
+    echo ""
+    exit 0
+    ;;
+esac
+
+export PATH=${WORKSPACE}/bin:$PATH
+
+echo "Using $MJOBS make jobs simultaneously."
+
+make_dir $PACKAGES
+make_dir $WORKSPACE
+make_dir $CMPL
+
+# if ! command_exists "make" -o ! command_exists "g++" -o ! command_exists "curl" -o ! command_exists "brew" -o ! command_exists "git" -o ! command_exists "hg" -o ! command_exists "svn" -o ! command_exists "wget"; then
+    # install_tool
+# fi
+
+# 安装brew工具
+if ! command_exists "brew"; then
+	echo 'homebrew not found. Trying to install...'
+	ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)" || exit 1
+
+	echo 'Homebrew updating...'
+	brew update
+fi
+
+if ! command_exists "make"; then
+	echo 'make not found. Trying to install...'
+	brew install make
+fi
+
+if ! command_exists "g++"; then
+	echo 'g++ not found. Trying to install...'
+	brew install g++
+fi
+
+if build "yasm"; then
+	# download "http://www.tortall.net/projects/yasm/releases/yasm-1.3.0.tar.gz" "yasm-1.3.0.tar.gz"
+	copy "yasm-1.3.0.tar.xz"
+	cd $PACKAGES/yasm-* || exit
+	execute ./configure --prefix=${WORKSPACE}
+	execute make -j $MJOBS 
+	execute make install
+	build_done "yasm"
+fi
+
+if build "opencore-amr"; then
+	# download "http://downloads.sourceforge.net/project/opencore-amr/opencore-amr/opencore-amr-0.1.5.tar.gz?r=http%3A%2F%2Fsourceforge.net%2Fprojects%2Fopencore-amr%2Ffiles%2Fopencore-amr%2F&ts=1442256558&use_mirror=netassist" "opencore-amr-0.1.5.tar.gz"
+	copy "opencore-amr-0.1.5.tar.xz"
+	cd $PACKAGES/opencore-amr-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static 
+	execute make -j $MJOBS
+	execute make install
+	build_done "opencore-amr"
+fi
+
+# YUV To V8、V9
+if build "libvpx"; then
+	# download "https://codeload.github.com/webmproject/libvpx/tar.gz/v1.7.0" "libvpx-1.7.0.tar.gz"
+	copy "libvpx-1.7.0.tar.xz"
+    cd $PACKAGES/libvpx-* || exit
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "Applying Darwin patch"
+        sed "s/,--version-script//g" build/make/Makefile > build/make/Makefile.patched
+        sed "s/-Wl,--no-undefined -Wl,-soname/-Wl,-undefined,error -Wl,-install_name/g" build/make/Makefile.patched > build/make/Makefile
+    fi
+
+	execute ./configure --prefix=${WORKSPACE} --disable-unit-tests  --enable-static --disable-shared
+	execute make -j $MJOBS
+	execute make install
+	build_done "libvpx"
+fi
+
+if build "lame"; then
+	# download "http://kent.dl.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz" "lame-3.100.tar.gz"
+	copy "lame-3.100.tar.xz"
+	cd $PACKAGES/lame-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "lame"
+fi
+
+if build "xvidcore"; then
+	# download "http://downloads.xvid.org/downloads/xvidcore-1.3.4.tar.gz" "xvidcore-1.3.4.tar.gz"
+	copy "xvidcore-1.3.5.tar.xz"
+	cd $PACKAGES/xvidcore-*  || exit
+	cd build/generic  || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+
+	if [[ -f ${WORKSPACE}/lib/libxvidcore.4.dylib ]]; then
+	    execute rm "${WORKSPACE}/lib/libxvidcore.4.dylib"
+	fi
+	
+	build_done "xvidcore"
+fi
+
+if build "nasm"; then
+	# download "http://www.nasm.us/pub/nasm/releasebuilds/2.13.03/nasm-2.13.03.tar.gz" "nasm.tar.gz"
+	copy "nasm-2.14rc0.tar.xz"
+	cd $PACKAGES/nasm-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "nasm"
+fi
+
+if build "x264"; then
+	# do_git_checkout "http://repo.or.cz/r/x264.git" "x264" "origin/stable"
+	copy "x264-git.tar.xz"
+	cd $PACKAGES/x264-* || exit
+	execute ./configure --prefix=${WORKSPACE} --enable-static
+	execute make -j $MJOBS
+	execute make install
+	execute make install-lib-static
+	build_done "x264"
+fi
+
+if build "libogg"; then
+	# download "http://downloads.xiph.org/releases/ogg/libogg-1.3.3.tar.gz" "libogg-1.3.3.tar.gz"
+	copy "libogg-1.3.3.tar.xz"
+	cd $PACKAGES/libogg-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "libogg"
+fi
+
+if build "libvorbis"; then
+	# download "http://downloads.xiph.org/releases/vorbis/libvorbis-1.3.6.tar.gz" "libvorbis-1.3.6.tar.gz"
+	copy "libvorbis-1.3.6.tar.xz"
+	cd $PACKAGES/libvorbis-* || exit
+	execute ./configure --prefix=${WORKSPACE} --with-ogg-libraries=${WORKSPACE}/lib --with-ogg-includes=${WORKSPACE}/include/ --enable-static --disable-shared --disable-oggtest
+	execute make -j $MJOBS
+	execute make install
+	build_done "libvorbis"
+fi
+
+if build "libtheora"; then
+	# download "http://downloads.xiph.org/releases/theora/libtheora-1.1.1.tar.gz" "libtheora-1.1.1.tar.bz"
+	copy "libtheora-1.1.1.tar.xz"
+	cd $PACKAGES/libtheora-* || exit
+	sed "s/-fforce-addr//g" configure > configure.patched
+	chmod +x configure.patched
+	mv configure.patched configure
+	execute ./configure --prefix=${WORKSPACE} --with-ogg-libraries=${WORKSPACE}/lib --with-ogg-includes=${WORKSPACE}/include/ --with-vorbis-libraries=${WORKSPACE}/lib --with-vorbis-includes=${WORKSPACE}/include/ --enable-static --disable-shared --disable-oggtest --disable-vorbistest --disable-examples --disable-asm
+	execute make -j $MJOBS
+	execute make install
+	build_done "libtheora"
+fi
+
+if build "pkg-config"; then
+	# download "http://pkgconfig.freedesktop.org/releases/pkg-config-0.29.1.tar.gz" "pkg-config-0.29.1.tar.gz"
+	copy "pkg-config-0.29.2.tar.xz"
+	cd $PACKAGES/pkg-config-* || exit
+	execute ./configure --silent --prefix=${WORKSPACE} --with-pc-path=${WORKSPACE}/lib/pkgconfig --with-internal-glib
+	execute make -j $MJOBS
+	execute make install
+	build_done "pkg-config"
+fi
+
+if build "cmake"; then
+	# download "https://cmake.org/files/v3.5/cmake-3.5.2.tar.gz" "cmake-3.5.2.tar.gz"
+	copy "cmake-3.11.0.tar.xz"
+	cd $PACKAGES/cmake-*  || exit
+	rm Modules/FindJava.cmake
+	perl -p -i -e "s/get_filename_component.JNIPATH/#get_filename_component(JNIPATH/g" Tests/CMakeLists.txt 
+	perl -p -i -e "s/get_filename_component.JNIPATH/#get_filename_component(JNIPATH/g" Tests/CMakeLists.txt 
+	execute ./configure --prefix=${WORKSPACE} 
+	execute make -j $MJOBS
+	execute make install
+	PATH=${WORKSPACE}/bin:$PATH
+	build_done "cmake"
+fi
+
+if build "vid_stab"; then
+	# https://github.com/georgmartius/vid.stab.git
+	# download "https://codeload.github.com/georgmartius/vid.stab/legacy.tar.gz/release-0.98b" "vid.stab-0.98b-transcode-1.1-binary-x86_64.tgz"
+	copy "libvidstab-git.tar.xz"
+	cd $PACKAGES/libvidstab-* || exit
+	perl -p -i -e "s/vidstab SHARED/vidstab STATIC/" CMakeLists.txt 
+	execute cmake -DCMAKE_INSTALL_PREFIX:PATH=${WORKSPACE} . 
+	execute make install
+	build_done "vid_stab"
+fi
+
+if build "x265"; then
+	# https://bitbucket.org/multicoreware/x265/downloads/x265_2.7.tar.gz 
+	# download "http://ftp.videolan.org/pub/videolan/x265/x265_2.7.tar.gz" "x265_2.7.tar.gz"
+	copy "x265-2.7.tar.xz"
+	cd $PACKAGES/x265_* || exit
+	cd source || exit
+	execute cmake -DCMAKE_INSTALL_PREFIX:PATH=${WORKSPACE} -DENABLE_SHARED:bool=off . 
+	execute make -j $MJOBS
+	execute make install
+	sed "s/-lx265/-lx265 -lstdc++/g" "$WORKSPACE/lib/pkgconfig/x265.pc" > "$WORKSPACE/lib/pkgconfig/x265.pc.tmp"
+	mv "$WORKSPACE/lib/pkgconfig/x265.pc.tmp" "$WORKSPACE/lib/pkgconfig/x265.pc"
+	build_done "x265"
+fi
+
+if build "fdk_aac"; then
+	# download "https://jaist.dl.sourceforge.net/project/opencore-amr/fdk-aac/fdk-aac-0.1.6.tar.gz" "fdk-aac-0.1.6.tar.gz"
+	copy "fdk-aac-0.1.6.tar.xz"
+	cd $PACKAGES/fdk-aac-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "fdk_aac"
+fi
+
+if build "opus"; then
+	# download "https://archive.mozilla.org/pub/opus/opus-1.2.1.tar.gz" "opus-1.2.1.tar.gz"
+	copy "opus-1.2.1.tar.xz"
+	cd $PACKAGES/opus-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "opus"
+fi
+
+if build "openjpeg"; then
+	# download "https://downloads.sourceforge.net/openjpeg.mirror/openjpeg-1.5.2.tar.gz" "openjpeg-1.5.2.tar.gz"
+	copy "openjpeg-1.5.2.tar.xz"
+	cd $PACKAGES/openjpeg-* || exit
+	autoreconf -f -i
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "openjpeg"
+fi
+
+if build "openssl"; then
+	# download "https://www.openssl.org/source/openssl-1.1.0h.tar.gz" "openssl-1.1.0h.tar.gz"
+	copy "openssl-1.1.0h.tar.xz"
+	cd $PACKAGES/openssl-* || exit
+	# darwin-i386-cc(32位系统), darwin64-x86_64-cc(64位系统), 在这里只能编译32位的openssl
+	execute ./configure darwin-i386-cc -shared --prefix=${WORKSPACE}
+	execute make -j $MJOBS
+	execute make install
+	build_done "openssl"
+fi
+
+# 需要zlib和openssl的依赖
+if build "rtmp"; then
+	# do_git_checkout "http://repo.or.cz/r/rtmpdump.git" "rtmpdump.git"
+	copy "rtmpdump-2.4.tar.xz"
+	cd $PACKAGES/rtmpdump-* || exit
+	make SYS=darwin64-x86_64-cc prefix=${WORKSPACE} INC="-I$WORKSPACE/include"
+	execute make install
+	sed -i 's/-lrtmp -lz/-lrtmp -lwinmm -lz/' > "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp"
+	mv "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp" "$WORKSPACE/lib/pkgconfig/librtmp.pc"
+	build_done "rtmp"
+fi
+
+build "ffmpeg"
+copy "ffmpeg-3.4.2.tar.xz"
+# do_git_checkout https://git.ffmpeg.org/ffmpeg.git ffmpeg.git
+# download "http://ffmpeg.org/releases/ffmpeg-3.4.1.tar.bz2" "ffmpeg-snapshot.tar.bz2"
+cd $PACKAGES/ffmpeg-* || exit
+CFLAGS="-I$WORKSPACE/include" LDFLAGS="-L$WORKSPACE/lib" 
+execute ./configure --arch=64 --prefix=${WORKSPACE} --extra-cflags="-I$WORKSPACE/include" --extra-ldflags="-L$WORKSPACE/lib" \
+	--extra-version=static \
+	--extra-cflags=--static \
+	--enable-static \
+	--disable-debug \
+	--disable-shared \
+	--disable-ffplay \
+	--disable-ffserver \
+	--disable-doc \
+	--enable-gpl \
+	--enable-version3 \
+	--enable-nonfree \
+	--enable-pthreads \
+	--enable-libmp3lame \
+	--enable-libopenjpeg \
+	--enable-libtheora \
+	--enable-libvpx \
+	--enable-libvorbis \
+	--enable-libx264 \
+	--enable-libx265 \
+	--enable-runtime-cpudetect \
+	--enable-libfdk-aac \
+	--enable-avfilter \
+	--enable-libopencore_amrwb \
+	--enable-libopencore_amrnb \
+	--enable-filters \
+	--enable-libvidstab \
+	--enable-librtmp \
+	--extra-cflags=-mmacosx-version-min=10.8 \
+	--extra-ldflags=-mmacosx-version-min=10.8
+	# enable all filters
+	# enable AAC de/encoding via libfdk-aac [no]
+	# enable detecting cpu capabilities at runtime (smaller binary)
+	# enable HEVC encoding via x265 [no]
+	# enable H.264 encoding via x264 [no]
+	# enable Vorbis en/decoding via libvorbis, native implementation exists [no]
+	# enable Theora encoding via libtheora [no]
+	# enable MP3 encoding via libmp3lame [no]
+	# enable VP8 and VP9 de/encoding via libvpx [no]
+	# enable pthreads [autodetect]
+	# allow use of nonfree code, the resulting libs and binaries will be unredistributable [no]
+	# upgrade (L)GPL to version 3 [no]
+	# allow use of GPL code, the resulting libs and binaries will be under GPL [no]
+	# do not build documentation
+	# disable ffserver build
+	# disable ffplay build
+	# build static libraries [no]
+	# disable debugging symbols
+	# disable build shared libraries [no]
+execute make -j $MJOBS
+execute make install
+
+INSTALL_FOLDER="/usr/bin"
+if [[ "$OSTYPE" == "darwin"* ]]; then
+INSTALL_FOLDER="/usr/local/bin"
+fi
+
+echo ""
+echo "Building done. The binary can be found here: $WORKSPACE/bin/ffmpeg"
+echo ""
+
+
+if [[ ! $SKIPINSTALL == "yes" ]]; then
+	if command_exists "sudo"; then
+
+		read -r -p "Install the binary to your $INSTALL_FOLDER folder? [Y/n] " response
+
+		case $response in
+    		[yY][eE][sS]|[yY])
+        		sudo cp "$WORKSPACE/bin/ffmpeg" "$INSTALL_FOLDER/ffmpeg"
+        		sudo cp "$WORKSPACE/bin/ffprobe" "$INSTALL_FOLDER/ffprobe"
+        		echo "Done. ffmpeg is now installed to your system"
+        		;;
+		esac
+	fi
+fi
+
+exit 0
