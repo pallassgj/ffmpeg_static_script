@@ -7,6 +7,7 @@ CWD=$(pwd)
 PACKAGES="$CWD/packages"
 WORKSPACE="$CWD/workspace"
 SOURCE="$CWD/source"
+export PATH=/usr/local/clang4/bin:$PATH
 CC=clang
 LDFLAGS="-L${WORKSPACE}/lib -lm" 
 CFLAGS="-I${WORKSPACE}/include"
@@ -338,6 +339,10 @@ if ! command_exists "brew"; then
 	brew update
 fi
 
+if  ! command_exists "sed"; then
+	export PATH="/usr/local/Cellar/gnu-sed/4.4/bin:$PATH"
+fi
+
 if ! command_exists "make"; then
 	echo 'make not found. Trying to install...'
 	brew install make
@@ -425,7 +430,7 @@ fi
 if build "x264"; then
 	# do_git_checkout "http://repo.or.cz/r/x264.git" "x264" "origin/stable"
 	copy "x264-git.tar.xz"
-	cd $PACKAGES/x264-* || exit
+	cd $PACKAGES/x264* || exit
 	execute ./configure --prefix=${WORKSPACE} --enable-static
 	execute make -j $MJOBS
 	execute make install
@@ -493,8 +498,8 @@ fi
 if build "vid_stab"; then
 	# https://github.com/georgmartius/vid.stab.git
 	# download "https://codeload.github.com/georgmartius/vid.stab/legacy.tar.gz/release-0.98b" "vid.stab-0.98b-transcode-1.1-binary-x86_64.tgz"
-	copy "libvidstab-git.tar.xz"
-	cd $PACKAGES/libvidstab-* || exit
+	copy "vid.stab-0.98b.tar.xz"
+	cd $PACKAGES/vid.stab-* || exit
 	perl -p -i -e "s/vidstab SHARED/vidstab STATIC/" CMakeLists.txt 
 	execute cmake -DCMAKE_INSTALL_PREFIX:PATH=${WORKSPACE} . 
 	execute make install
@@ -505,7 +510,7 @@ if build "x265"; then
 	# https://bitbucket.org/multicoreware/x265/downloads/x265_2.7.tar.gz 
 	# download "http://ftp.videolan.org/pub/videolan/x265/x265_2.7.tar.gz" "x265_2.7.tar.gz"
 	copy "x265-2.7.tar.xz"
-	cd $PACKAGES/x265_* || exit
+	cd $PACKAGES/x265-* || exit
 	cd source || exit
 	execute cmake -DCMAKE_INSTALL_PREFIX:PATH=${WORKSPACE} -DENABLE_SHARED:bool=off . 
 	execute make -j $MJOBS
@@ -539,7 +544,15 @@ if build "openjpeg"; then
 	# download "https://downloads.sourceforge.net/openjpeg.mirror/openjpeg-1.5.2.tar.gz" "openjpeg-1.5.2.tar.gz"
 	copy "openjpeg-1.5.2.tar.xz"
 	cd $PACKAGES/openjpeg-* || exit
-	autoreconf -f -i
+	# Mac默认的sed命令达不到效果, 要安装brew install gnu-sed --with-default-names
+	export PATH="/usr/local/Cellar/gnu-sed/4.4/bin:$PATH"
+	if [[ "$OSTYPE" == "darwin"* ]]; then
+        echo "Applying Darwin patch"
+        sed -i '2i\AUTOMAKE_OPTIONS = subdir-objects' applications/codec/Makefile.am
+        sed -i '2i\AUTOMAKE_OPTIONS = subdir-objects' applications/mj2/Makefile.am
+        sed -i '2i\AUTOMAKE_OPTIONS = subdir-objects' libopenjpeg/jpwl/Makefile.am
+    fi
+	autoreconf -f -i 2>/dev/null >/dev/null
 	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
 	execute make -j $MJOBS
 	execute make install
@@ -550,24 +563,24 @@ if build "openssl"; then
 	# download "https://www.openssl.org/source/openssl-1.1.0h.tar.gz" "openssl-1.1.0h.tar.gz"
 	copy "openssl-1.1.0h.tar.xz"
 	cd $PACKAGES/openssl-* || exit
-	# darwin-i386-cc(32位系统), darwin64-x86_64-cc(64位系统), 在这里只能编译32位的openssl
-	execute ./configure darwin-i386-cc -shared --prefix=${WORKSPACE}
+	# darwin-i386-cc(32位系统), darwin64-x86_64-cc(64位系统)
+	execute ./configure darwin64-x86_64-cc no-shared enable-sse2 --prefix=${WORKSPACE}
 	execute make -j $MJOBS
 	execute make install
 	build_done "openssl"
 fi
 
-# 需要zlib和openssl的依赖
-if build "rtmp"; then
-	# do_git_checkout "http://repo.or.cz/r/rtmpdump.git" "rtmpdump.git"
-	copy "rtmpdump-2.4.tar.xz"
-	cd $PACKAGES/rtmpdump-* || exit
-	make SYS=darwin64-x86_64-cc prefix=${WORKSPACE} INC="-I$WORKSPACE/include"
-	execute make install
-	sed -i 's/-lrtmp -lz/-lrtmp -lwinmm -lz/' > "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp"
-	mv "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp" "$WORKSPACE/lib/pkgconfig/librtmp.pc"
-	build_done "rtmp"
-fi
+# # 需要zlib和openssl的依赖
+# if build "rtmp"; then
+# 	# do_git_checkout "http://repo.or.cz/r/rtmpdump.git" "rtmpdump.git"
+# 	copy "rtmpdump-2.4.tar.xz"
+# 	cd $PACKAGES/rtmpdump* || exit
+# 	make SYS=darwin64-x86_64-cc prefix=${WORKSPACE} INC="-I$WORKSPACE/include" CPPFLAGS="-I/usr/local/Cellar/openssl/1.0.2h_1/include" LDFLAGS="-I/usr/local/Cellar/openssl/1.0.2h_1/lib"
+# 	execute make install
+# 	sed -i 's/-lrtmp -lz/-lrtmp -lwinmm -lz/' > "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp"
+# 	mv "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp" "$WORKSPACE/lib/pkgconfig/librtmp.pc"
+# 	build_done "rtmp"
+# fi
 
 build "ffmpeg"
 copy "ffmpeg-3.4.2.tar.xz"
@@ -602,28 +615,8 @@ execute ./configure --arch=64 --prefix=${WORKSPACE} --extra-cflags="-I$WORKSPACE
 	--enable-libopencore_amrnb \
 	--enable-filters \
 	--enable-libvidstab \
-	--enable-librtmp \
 	--extra-cflags=-mmacosx-version-min=10.8 \
 	--extra-ldflags=-mmacosx-version-min=10.8
-	# enable all filters
-	# enable AAC de/encoding via libfdk-aac [no]
-	# enable detecting cpu capabilities at runtime (smaller binary)
-	# enable HEVC encoding via x265 [no]
-	# enable H.264 encoding via x264 [no]
-	# enable Vorbis en/decoding via libvorbis, native implementation exists [no]
-	# enable Theora encoding via libtheora [no]
-	# enable MP3 encoding via libmp3lame [no]
-	# enable VP8 and VP9 de/encoding via libvpx [no]
-	# enable pthreads [autodetect]
-	# allow use of nonfree code, the resulting libs and binaries will be unredistributable [no]
-	# upgrade (L)GPL to version 3 [no]
-	# allow use of GPL code, the resulting libs and binaries will be under GPL [no]
-	# do not build documentation
-	# disable ffserver build
-	# disable ffplay build
-	# build static libraries [no]
-	# disable debugging symbols
-	# disable build shared libraries [no]
 execute make -j $MJOBS
 execute make install
 
