@@ -559,9 +559,94 @@ if build "openjpeg"; then
 	build_done "openjpeg"
 fi
 
+if build "libwebp"; then
+	copy "libwebp-0.6.1.tar.xz"
+	cd $PACKAGES/libwebp-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "libwebp"
+fi
+
+if build "speex"; then
+	copy "speex-1.2.0.tar.xz"
+	cd $PACKAGES/speex-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "speex"
+fi
+
+if build "freetype"; then
+	copy "freetype-2.9.tar.xz"
+	cd $PACKAGES/freetype-* || exit
+	sed -ri "s:.*(AUX_MODULES.*valid):\1:" modules.cfg
+	sed -r "s:.*(#.*SUBPIXEL_RENDERING) .*:\1:" -i include/freetype/config/ftoption.h
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "freetype"
+fi
+
+if build "libuuid"; then
+	copy "libuuid-1.0.3.tar.xz"
+	cd $PACKAGES/libuuid-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "libuuid"
+fi
+
+if build "fontconfig"; then
+	copy "fontconfig-2.13.0.tar.xz"
+	cd $PACKAGES/fontconfig-* || exit
+	rm -f src/fcobjshash.h
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static --disable-docs
+	execute make -j $MJOBS
+	execute make install
+	libdir="$WORKSPACE/lib"
+	sed "s/-L${libdir}/ -lfontconfig[^l]*$/-L${libdir} -lfontconfig -lfreetype -lexpat/g" "$WORKSPACE/lib/pkgconfig/fontconfig.pc" > "$WORKSPACE/lib/pkgconfig/fontconfig.pc.tmp"
+	mv "$WORKSPACE/lib/pkgconfig/fontconfig.pc.tmp" "$WORKSPACE/lib/pkgconfig/fontconfig.pc"
+	build_done "fontconfig"
+fi
+
+if build "fribidi"; then
+	copy "fribidi-1.0.2.tar.xz"
+	cd $PACKAGES/fribidi-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static  --disable-docs
+	execute make -j $MJOBS
+	execute make install
+	build_done "fribidi"
+fi
+
+# 需要freetype、fontconfig、fribidi的依赖
+if build "libass"; then
+	copy "libass-0.14.0.tar.xz"
+	cd $PACKAGES/libass-* || exit
+	# autoreconf -f -i 2>/dev/null >/dev/null
+	# export PKG_CONFIG_PATH=$WORKSPACE/lib/pkgconfig:$PKG_CONFIG_PATH
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	sed "s/-lass -lm/-lass -lfribidi -lm/" "$WORKSPACE/lib/pkgconfig/libass.pc" > "$WORKSPACE/lib/pkgconfig/libass.pc.tmp"
+	mv "$WORKSPACE/lib/pkgconfig/libass.pc.tmp" "$WORKSPACE/lib/pkgconfig/libass.pc"
+	build_done "libass"
+fi
+
+if build "libaacplus"; then
+	copy "libaacplus-1.1.0.tar.xz"
+	cd $PACKAGES/libaacplus-* || exit
+	# execute ./autogen.sh --enable-shared --enable-static
+	autoreconf -f -i 2>/dev/null >/dev/null
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "libaacplus"
+fi
+
 if build "openssl"; then
 	# download "https://www.openssl.org/source/openssl-1.1.0h.tar.gz" "openssl-1.1.0h.tar.gz"
-	copy "openssl-1.1.0h.tar.xz"
+	copy "openssl-1.0.2.tar.xz"
 	cd $PACKAGES/openssl-* || exit
 	# darwin-i386-cc(32位系统), darwin64-x86_64-cc(64位系统)
 	execute ./configure darwin64-x86_64-cc no-shared enable-sse2 --prefix=${WORKSPACE}
@@ -570,14 +655,23 @@ if build "openssl"; then
 	build_done "openssl"
 fi
 
-# # 需要zlib和openssl的依赖
+if build "zlib"; then
+	copy "zlib-1.2.11.tar.xz"
+	cd $PACKAGES/zlib-* || exit
+	execute ./configure --prefix=${WORKSPACE} --static
+	execute make -j $MJOBS
+	execute make install
+	build_done "zlib"
+fi
+
+# 需要zlib和openssl的依赖
 # if build "rtmp"; then
 # 	# do_git_checkout "http://repo.or.cz/r/rtmpdump.git" "rtmpdump.git"
 # 	copy "rtmpdump-2.4.tar.xz"
 # 	cd $PACKAGES/rtmpdump* || exit
-# 	make SYS=darwin64-x86_64-cc prefix=${WORKSPACE} INC="-I$WORKSPACE/include" CPPFLAGS="-I/usr/local/Cellar/openssl/1.0.2h_1/include" LDFLAGS="-I/usr/local/Cellar/openssl/1.0.2h_1/lib"
+# 	make SYS=darwin64-x86_64-cc prefix=${WORKSPACE} INC="-I$WORKSPACE/include" LDFLAGS="-L$WORKSPACE/lib"
 # 	execute make install
-# 	sed -i 's/-lrtmp -lz/-lrtmp -lwinmm -lz/' > "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp"
+# 	sed "s/-lrtmp -lz/-lrtmp -lwinmm -lz/" "$WORKSPACE/lib/pkgconfig/librtmp.pc" > "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp"
 # 	mv "$WORKSPACE/lib/pkgconfig/librtmp.pc.tmp" "$WORKSPACE/lib/pkgconfig/librtmp.pc"
 # 	build_done "rtmp"
 # fi
@@ -609,15 +703,20 @@ execute ./configure --arch=64 --prefix=${WORKSPACE} --extra-cflags="-I$WORKSPACE
 	--enable-libx264 \
 	--enable-libx265 \
 	--enable-runtime-cpudetect \
+	--enable-libass \
 	--enable-libfdk-aac \
 	--enable-avfilter \
 	--enable-libopencore_amrwb \
 	--enable-libopencore_amrnb \
 	--enable-filters \
 	--enable-libvidstab \
+	--enable-openssl \
 	--extra-cflags=-mmacosx-version-min=10.8 \
 	--extra-ldflags=-mmacosx-version-min=10.8
 execute make -j $MJOBS
+
+# --enable-librtmp \
+
 execute make install
 
 INSTALL_FOLDER="/usr/bin"
