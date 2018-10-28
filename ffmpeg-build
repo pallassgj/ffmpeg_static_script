@@ -239,6 +239,19 @@ download () {
 	fi
 }
 
+apply_patch() {
+	local url=$1
+	local patch_name=$(basename $url)
+	local patch_done_name="$patch_name.done"
+	if [[ ! -e $patch_done_name ]]; then
+		wget $url # might save redundantly to .1 or .2, but that's ok
+		patch -p0 < "$patch_name" #|| exit 1
+		touch $patch_done_name
+	else
+		echo "patch $patch_name already applied"
+	fi
+}
+
 copy () {
 	if [ ! -f "$PACKAGES/$1" ]; then
 		
@@ -339,10 +352,6 @@ if ! command_exists "brew"; then
 	brew update
 fi
 
-if  ! command_exists "sed"; then
-	export PATH="/usr/local/Cellar/gnu-sed/4.4/bin:$PATH"
-fi
-
 if ! command_exists "make"; then
 	echo 'make not found. Trying to install...'
 	brew install make
@@ -352,6 +361,12 @@ if ! command_exists "g++"; then
 	echo 'g++ not found. Trying to install...'
 	brew install g++
 fi
+
+# Mac默认的sed命令达不到效果, 要安装brew install gnu-sed --with-default-names
+if [ ! -x "/usr/local/Cellar/gnu-sed/4.4/bin/sed" ]; then
+	brew install gnu-sed --with-default-names
+fi
+export PATH="/usr/local/Cellar/gnu-sed/4.4/bin:$PATH"
 
 if build "yasm"; then
 	# download "http://www.tortall.net/projects/yasm/releases/yasm-1.3.0.tar.gz" "yasm-1.3.0.tar.gz"
@@ -544,8 +559,6 @@ if build "openjpeg"; then
 	# download "https://downloads.sourceforge.net/openjpeg.mirror/openjpeg-1.5.2.tar.gz" "openjpeg-1.5.2.tar.gz"
 	copy "openjpeg-1.5.2.tar.xz"
 	cd $PACKAGES/openjpeg-* || exit
-	# Mac默认的sed命令达不到效果, 要安装brew install gnu-sed --with-default-names
-	export PATH="/usr/local/Cellar/gnu-sed/4.4/bin:$PATH"
 	if [[ "$OSTYPE" == "darwin"* ]]; then
         echo "Applying Darwin patch"
         sed -i '2i\AUTOMAKE_OPTIONS = subdir-objects' applications/codec/Makefile.am
@@ -577,11 +590,25 @@ if build "speex"; then
 	build_done "speex"
 fi
 
+if build "libpng"; then
+	copy "libpng-1.6.34.tar.xz"
+	cd $PACKAGES/libpng-* || exit
+	cp $SOURCE/libpng-1.6.34-apng.patch.gz $(pwd)/libpng-1.6.34-apng.patch.gz
+	gzip -cd libpng-1.6.34-apng.patch.gz | patch -p1
+	LIBS=-lpthread
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "libpng"
+fi
+
+# 需要libpng的依赖
 if build "freetype"; then
 	copy "freetype-2.9.tar.xz"
 	cd $PACKAGES/freetype-* || exit
 	sed -ri "s:.*(AUX_MODULES.*valid):\1:" modules.cfg
-	sed -r "s:.*(#.*SUBPIXEL_RENDERING) .*:\1:" -i include/freetype/config/ftoption.h
+	sed -r "s:.*(#.*SUBPIXEL_RENDERING) .*:\1:" -i "include/freetype/config/ftoption.h"
+	LIBPNG_LIBS=libpng.a
 	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
 	execute make -j $MJOBS
 	execute make install
@@ -597,16 +624,62 @@ if build "libuuid"; then
 	build_done "libuuid"
 fi
 
+if build "expat"; then
+	copy "expat-2.2.5.tar.xz"
+	cd $PACKAGES/expat-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+	execute make -j $MJOBS
+	execute make install
+	build_done "expat"
+fi
+
+if build "xz"; then
+	copy "xz-5.2.3.tar.xz"
+	cd $PACKAGES/xz-* || exit
+	execute ./configure --prefix=${WORKSPACE} --with-arch=x86_64 --disable-shared --enable-static=yes CFLAGS=-fPIC
+	execute make -j $MJOBS
+	execute make install
+	build_done "xz"
+fi
+
+if  build "libiconv"; then
+	copy "libiconv-1.15.tar.xz"
+	cd $PACKAGES/libiconv-* || exit
+	execute ./configure --prefix=${WORKSPACE} --with-arch=x86_64 --disable-shared --enable-static=yes CFLAGS=-fPIC
+	execute make -j $MJOBS
+	execute make install
+	build_done "libiconv"
+fi
+
+if build "zlib"; then
+	copy "zlib-1.2.11.tar.xz"
+	cd $PACKAGES/zlib-* || exit
+	execute ./configure --prefix=${WORKSPACE} --with-arch=x86_64 --static
+	execute make -j $MJOBS
+	execute make install
+	build_done "zlib"
+fi
+
+# 需要libiconv、zlib的支持
+if build "libxml2"; then
+	copy "libxml2-2.7.1.tar.xz"
+	cd $PACKAGES/libxml2-* || exit
+	execute ./configure --prefix=${WORKSPACE} --with-arch=x86_64 --disable-shared --enable-static --with-zlib=${WORKSPACE} --with-iconv=${WORKSPACE}
+	execute make -j $MJOBS
+	execute make install
+	build_done "libxml2"
+fi
+
+# 需要expat, libxml2的支持
 if build "fontconfig"; then
 	copy "fontconfig-2.13.0.tar.xz"
 	cd $PACKAGES/fontconfig-* || exit
-	rm -f src/fcobjshash.h
-	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static --disable-docs
+	# rm -f src/fcobjshash.h
+	execute ./configure --prefix=${WORKSPACE} --with-arch=x86_64 --disable-shared --enable-static --enable-libxml2 --with-libiconv-lib="-L$WORKSPACE"
 	execute make -j $MJOBS
 	execute make install
 	libdir="$WORKSPACE/lib"
-	sed "s/-L${libdir}/ -lfontconfig[^l]*$/-L${libdir} -lfontconfig -lfreetype -lexpat/g" "$WORKSPACE/lib/pkgconfig/fontconfig.pc" > "$WORKSPACE/lib/pkgconfig/fontconfig.pc.tmp"
-	mv "$WORKSPACE/lib/pkgconfig/fontconfig.pc.tmp" "$WORKSPACE/lib/pkgconfig/fontconfig.pc"
+	sed -i "s/-L${libdir} -lfontconfig[^l]*$/-L${libdir} -lfontconfig -lfreetype -lexpat/g" "$WORKSPACE/lib/pkgconfig/fontconfig.pc"
 	build_done "fontconfig"
 fi
 
@@ -619,18 +692,98 @@ if build "fribidi"; then
 	build_done "fribidi"
 fi
 
-# 需要freetype、fontconfig、fribidi的依赖
+# 需要GLib、ICU的依赖, GLib需要PCRE的依赖
+# if build "harfbuzz"; then
+# 	copy "harfbuzz-1.7.6.tar.xz"
+# 	cd $PACKAGES/harfbuzz-* || exit
+# 	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static  --with-gobject
+# 	execute make -j $MJOBS
+# 	execute make install
+# 	build_done "harfbuzz"
+# fi
+
+# 需要freetype、fontconfig、fribidi、libiconv、harfbuzz的依赖
 if build "libass"; then
 	copy "libass-0.14.0.tar.xz"
 	cd $PACKAGES/libass-* || exit
-	# autoreconf -f -i 2>/dev/null >/dev/null
-	# export PKG_CONFIG_PATH=$WORKSPACE/lib/pkgconfig:$PKG_CONFIG_PATH
+	autoreconf -f -i 2>/dev/null >/dev/null
+	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:$PKG_CONFIG_PATH
+	execute ./configure --prefix=${WORKSPACE} --with-arch=x86_64 --disable-shared --enable-static --disable-docs --disable-harfbuzz
+	execute make -j $MJOBS
+	execute make install
+	sed -i "s/-lass -lm/-lass -lfribidi -lm/" "$WORKSPACE/lib/pkgconfig/libass.pc"
+	build_done "libass"
+fi
+
+if build "gsm"; then
+	copy "gsm-1.0.17.tar.xz"
+	cd $PACKAGES/gsm-* || exit
+	# execute ./configure --prefix=${WORKSPACE} ABI=64 --disable-shared --enable-static
+	execute make -j $MJOBS INSTALL_ROOT=${WORKSPACE}
+	cp lib/libgsm.a ${WORKSPACE}/lib || exit 1
+	mkdir -p  ${WORKSPACE}/include/gsm
+	cp inc/gsm.h ${WORKSPACE}/include/gsm || exit 1
+	build_done "gsm"
+fi
+
+# 需要libxmls2的依赖,可以选择ANT的支持(brew cask install java, brew install ANT)，但是java版本必须是10以下
+if build "libbluray"; then
+	copy "libbluray-1.0.2.tar.xz"
+	cd $PACKAGES/libbluray-* || exit
+	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static --disable-bdjava-jar  --without-libxml2
+	execute make -j $MJOBS
+	execute make install
+	build_done "libbluray"
+fi
+
+
+if  build "nettle"; then
+	copy "nettle-3.4.tar.xz"
+	cd $PACKAGES/nettle-* || exit
 	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
 	execute make -j $MJOBS
 	execute make install
-	sed "s/-lass -lm/-lass -lfribidi -lm/" "$WORKSPACE/lib/pkgconfig/libass.pc" > "$WORKSPACE/lib/pkgconfig/libass.pc.tmp"
-	mv "$WORKSPACE/lib/pkgconfig/libass.pc.tmp" "$WORKSPACE/lib/pkgconfig/libass.pc"
-	build_done "libass"
+	build_done "nettle"
+fi
+
+# if build "libtasn1"; then
+# 	copy "libtasn1-4.13.tar.xz"
+# 	cd $PACKAGES/libtasn1-* || exit
+# 	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+# 	execute make -j $MJOBS
+# 	execute make install
+# 	build_done "libtasn1"
+# fi
+
+# 需要nettle,libtasn1的依赖
+# if  build "gnutls"; then
+# 	copy "gnutls-3.5.18.tar.xz"
+# 	cd $PACKAGES/gnutls-* || exit
+# 	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static --disable-cxx --without-p11-kit
+# 	execute make -j $MJOBS
+# 	execute make install
+# 	sed -i "s/-lgnutls *$/-lgnutls -lnettle -lhogweed -lgmp -lcrypt32 -lws2_32/" "$WORKSPACE/lib/pkgconfig/gnutls.pc"
+# 	build_done "gnutls"
+# fi
+
+# if  build "frei0r-plugins"; then
+# 	copy "frei0r-plugins-1.6.1.tar.xz"
+# 	cd $PACKAGES/frei0r-plugins-* || exit
+# 	execute ./configure --prefix=${WORKSPACE} --disable-shared --enable-static
+# 	execute make -j $MJOBS
+# 	execute make install
+# 	build_done "frei0r-plugins"
+# fi
+
+if build "flite"; then
+	copy "flite-1.4.tar.xz"
+	cd $PACKAGES/flite-* || exit
+	sed -i "s/cp -pd/cp -pR/g" "main/Makefile"
+	execute ./configure --prefix=${WORKSPACE} ABI=64 --disable-shared --enable-static
+	# apply_patch "https://raw.github.com/rdp/ffmpeg-windows-build-helpers/master/patches/flite_64.diff"
+	execute make -j $MJOBS
+	execute make install
+	build_done "flite"
 fi
 
 if build "libaacplus"; then
@@ -649,25 +802,18 @@ if build "openssl"; then
 	copy "openssl-1.0.2.tar.xz"
 	cd $PACKAGES/openssl-* || exit
 	# darwin-i386-cc(32位系统), darwin64-x86_64-cc(64位系统)
-	execute ./configure darwin64-x86_64-cc no-shared enable-sse2 --prefix=${WORKSPACE}
+	execute ./configure darwin64-x86_64-cc no-shared --prefix=${WORKSPACE}
+	# enable-sse2  -O2 -fPIC
 	execute make -j $MJOBS
 	execute make install
 	build_done "openssl"
 fi
 
-if build "zlib"; then
-	copy "zlib-1.2.11.tar.xz"
-	cd $PACKAGES/zlib-* || exit
-	execute ./configure --prefix=${WORKSPACE} --static
-	execute make -j $MJOBS
-	execute make install
-	build_done "zlib"
-fi
 
 # 需要zlib和openssl的依赖
 # if build "rtmp"; then
 # 	# do_git_checkout "http://repo.or.cz/r/rtmpdump.git" "rtmpdump.git"
-# 	copy "rtmpdump-2.4.tar.xz"
+# 	copy "rtmpdump-2.3.tar.xz"
 # 	cd $PACKAGES/rtmpdump* || exit
 # 	make SYS=darwin64-x86_64-cc prefix=${WORKSPACE} INC="-I$WORKSPACE/include" LDFLAGS="-L$WORKSPACE/lib"
 # 	execute make install
@@ -696,25 +842,33 @@ execute ./configure --arch=64 --prefix=${WORKSPACE} --extra-cflags="-I$WORKSPACE
 	--enable-nonfree \
 	--enable-pthreads \
 	--enable-libmp3lame \
+	--enable-pic \
 	--enable-libopenjpeg \
 	--enable-libtheora \
 	--enable-libvpx \
+	--enable-libwebp \
+	--enable-libspeex \
 	--enable-libvorbis \
 	--enable-libx264 \
 	--enable-libx265 \
 	--enable-runtime-cpudetect \
+	--enable-libgsm \
 	--enable-libass \
 	--enable-libfdk-aac \
+	--enable-libbluray \
 	--enable-avfilter \
 	--enable-libopencore_amrwb \
 	--enable-libopencore_amrnb \
 	--enable-filters \
 	--enable-libvidstab \
+	--enable-zlib \
+	--enable-libxml2 \
 	--enable-openssl \
 	--extra-cflags=-mmacosx-version-min=10.8 \
 	--extra-ldflags=-mmacosx-version-min=10.8
 execute make -j $MJOBS
 
+# --enable-libaacplus \
 # --enable-librtmp \
 
 execute make install
